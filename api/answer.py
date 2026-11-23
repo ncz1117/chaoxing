@@ -66,15 +66,35 @@ class CacheDAO:
             cached = self._path_caches.get(self._cache_key)
             cached_sig = self._path_sigs.get(self._cache_key)
             if cached is not None and sig is not None and sig == cached_sig:
-                return cached
+                return dict(cached)
             if sig is None:
                 data = {}
-                self._write_cache(data)
-            else:
+                if self._write_cache(data):
+                    self._path_caches[self._cache_key] = dict(data)
+                    self._path_sigs[self._cache_key] = self._file_sig()
+                return data
+
+            data: dict = {}
+            for _ in range(3):
+                sig_before = self._file_sig()
+                if sig_before is None:
+                    data = {}
+                    if self._write_cache(data):
+                        self._path_caches[self._cache_key] = dict(data)
+                        self._path_sigs[self._cache_key] = self._file_sig()
+                    return data
                 data = self._read_cache()
-            self._path_caches[self._cache_key] = data
-            self._path_sigs[self._cache_key] = self._file_sig()
-            return data
+                sig_after = self._file_sig()
+                if sig_after is not None and sig_before == sig_after:
+                    snapshot = dict(data)
+                    self._path_caches[self._cache_key] = snapshot
+                    self._path_sigs[self._cache_key] = sig_after
+                    return dict(snapshot)
+
+            # 文件在读取期间持续被外部替换，不绑定内存签名，确保下次访问继续重读
+            self._path_caches.pop(self._cache_key, None)
+            self._path_sigs.pop(self._cache_key, None)
+            return dict(data)
 
     def _recover_or_backup(self, error_label: str) -> dict:
         # 尝试从原始二进制中以 utf-8 忽略错误地恢复有效 JSON 段
@@ -125,7 +145,7 @@ class CacheDAO:
             logger.error(f"读取缓存异常: {e}")
             return {}
 
-    def _write_cache(self, data: dict) -> None:
+    def _write_cache(self, data: dict) -> bool:
         # 为缓存写入加锁，防止并发写入损坏文件
         try:
             with self._lock:
@@ -140,6 +160,7 @@ class CacheDAO:
                         fp.flush()
                         os.fsync(fp.fileno())
                     os.replace(tmp_path, str(self.cache_file))
+                    return True
                 except Exception as e:
                     # 清理临时文件
                     try:
@@ -148,8 +169,10 @@ class CacheDAO:
                     except Exception:
                         pass
                     logger.error(f"Failed to write cache atomically: {e}")
+                    return False
         except IOError as e:
             logger.error(f"Failed to write cache: {e}")
+            return False
 
     def get_cache(self, question: str) -> Optional[str]:
         with self._lock:
@@ -159,11 +182,12 @@ class CacheDAO:
     def add_cache(self, question: str, answer: str) -> None:
         # 为缓存写入加锁，防止并发写入损坏文件
         with self._lock:
-            data = self._ensure_loaded()
-            data[question] = answer
-            self._write_cache(data)
-            self._path_caches[self._cache_key] = data
-            self._path_sigs[self._cache_key] = self._file_sig()
+            current = self._ensure_loaded()
+            updated = dict(current)
+            updated[question] = answer
+            if self._write_cache(updated):
+                self._path_caches[self._cache_key] = updated
+                self._path_sigs[self._cache_key] = self._file_sig()
 
 
 class Tiku(ABC):

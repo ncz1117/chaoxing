@@ -108,6 +108,56 @@ class DeadCodeAndCacheTestCase(unittest.TestCase):
             persisted = json.loads(cache_path.read_text(encoding="utf-8"))
             self.assertEqual(len(persisted), 60)
 
+    def test_cache_dao_reloads_when_external_writer_replaces_file_during_read(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "race_cache.json"
+            cache_path.write_text(json.dumps({"base": "v0"}), encoding="utf-8")
+            dao = CacheDAO(str(cache_path))
+
+            # 外部写入者先更新一次，触发重读；在第一次重读完成瞬间外部写入者再次替换文件
+            cache_path.write_text(json.dumps({"base": "v0", "ext1": "v1"}), encoding="utf-8")
+            orig_read = CacheDAO._read_cache
+            inject_done = False
+
+            def racing_read(self_dao):
+                nonlocal inject_done
+                result = orig_read(self_dao)
+                if not inject_done:
+                    inject_done = True
+                    cache_path.write_text(
+                        json.dumps({"base": "v0", "ext1": "v1", "ext2": "external_new_value"}),
+                        encoding="utf-8",
+                    )
+                return result
+
+            with patch.object(CacheDAO, "_read_cache", autospec=True, side_effect=racing_read) as mock_read:
+                dao.add_cache("local_q", "local_a")
+                # 首次读取发现签名变化后应自动重读
+                self.assertEqual(mock_read.call_count, 2)
+
+            self.assertEqual(dao.get_cache("ext2"), "external_new_value")
+            self.assertEqual(dao.get_cache("local_q"), "local_a")
+            persisted = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                persisted,
+                {"base": "v0", "ext1": "v1", "ext2": "external_new_value", "local_q": "local_a"},
+            )
+
+    def test_cache_dao_does_not_pollute_memory_when_atomic_replace_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "fail_cache.json"
+            cache_path.write_text(json.dumps({"k1": "v1"}), encoding="utf-8")
+            dao = CacheDAO(str(cache_path))
+
+            with patch("api.answer.os.replace", side_effect=OSError("replace failed")):
+                dao.add_cache("k2", "v2")
+                dao.add_cache("k1", "v1_unsaved")
+
+            self.assertIsNone(dao.get_cache("k2"))
+            self.assertEqual(dao.get_cache("k1"), "v1")
+            self.assertIsNone(CacheDAO(str(cache_path)).get_cache("k2"))
+            self.assertEqual(json.loads(cache_path.read_text(encoding="utf-8")), {"k1": "v1"})
+
     def test_tiku_query_returns_validated_answer_and_handles_redo_mode(self):
         with tempfile.TemporaryDirectory() as tmpdir, \
              patch.object(CacheDAO, "DEFAULT_CACHE_FILE", str(Path(tmpdir) / "tiku_cache.json")):

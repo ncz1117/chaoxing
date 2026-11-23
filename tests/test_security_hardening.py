@@ -3,12 +3,13 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import main  # noqa: E402
 from api.answer import Tiku, TikuAdapter, TikuFallback, TikuYanxi  # noqa: E402
 from api.base import Chaoxing  # noqa: E402
 
@@ -70,6 +71,26 @@ class SecurityHardeningTestCase(unittest.TestCase):
         joined = "\n".join(debug_messages)
         self.assertIn("secret_cookie_name", joined)
         self.assertNotIn(secret_val, joined)
+
+    def test_error_notification_does_not_leak_exception_text(self):
+        mock_notifier = Mock()
+        mock_factory = Mock()
+        mock_factory.get_notification_from_config.return_value = mock_notifier
+        mock_cx = Mock()
+        mock_cx.login.side_effect = RuntimeError("token=SECRET_TOKEN_999")
+
+        with patch("main.init_config", return_value=({}, {}, {}, None)), \
+             patch("main.init_chaoxing", return_value=mock_cx), \
+             patch("main.Notification", return_value=mock_factory), \
+             patch("main.logger"):
+            with self.assertRaises(RuntimeError):
+                main.main()
+
+        mock_notifier.send.assert_called_once()
+        sent = mock_notifier.send.call_args.args[0]
+        self.assertIn("RuntimeError", sent)
+        self.assertIn("请查看 chaoxing.log 了解详情", sent)
+        self.assertNotIn("SECRET_TOKEN_999", sent)
 
 
 if __name__ == "__main__":

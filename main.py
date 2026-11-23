@@ -626,7 +626,7 @@ def main():
         logger.error(f"错误: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
         try:
-            notification.send(f"chaoxing : 出现错误 {type(e).__name__}: {e}（详细堆栈见 chaoxing.log）")
+            notification.send(f"chaoxing : 出现错误 {type(e).__name__}，请查看 chaoxing.log 了解详情")
         except Exception:
             pass  # 如果通知发送失败，忽略异常
         raise e

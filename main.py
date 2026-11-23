@@ -2,6 +2,7 @@
 import argparse
 import configparser
 import enum
+import getpass
 import sys
 import threading
 import time
@@ -217,7 +218,7 @@ def init_chaoxing(common_config, tiku_config, config_path=None):
     # 如果没有提供用户名密码，从命令行获取
     if (not username or not password) and not use_cookies:
         username = input("请输入你的手机号, 按回车确认\n手机号:")
-        password = input("请输入你的密码, 按回车确认\n密码:")
+        password = getpass.getpass("请输入你的密码, 按回车确认\n密码:")
 
     account = Account(username, password)
 
@@ -625,7 +626,7 @@ def main():
         logger.error(f"错误: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
         try:
-            notification.send(f"chaoxing : 出现错误 {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            notification.send(f"chaoxing : 出现错误 {type(e).__name__}，请查看 chaoxing.log 了解详情")
         except Exception:
             pass  # 如果通知发送失败，忽略异常
         raise e

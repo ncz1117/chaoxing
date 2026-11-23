@@ -142,6 +142,7 @@ class Tiku(ABC):
     DISABLE = False  # 停用标志
     SUBMIT = False  # 提交标志
     COVER_RATE = 0.8  # 覆盖率
+    ssl_verify = True  # 默认校验题库 TLS 证书
     true_list = None
     false_list = None
 
@@ -188,6 +189,10 @@ class Tiku(ABC):
         # 尝试根据配置文件设置提交模式
         if not self._conf:
             self.config_set(self._get_conf())
+        if self._conf is not None:
+            self.ssl_verify = str(self._conf.get("ssl_verify", "true")).strip().lower() not in (
+                "false", "0", "no", "off"
+            )
         if not self.DISABLE:
             # 设置提交模式
             self.SUBMIT = True if self._conf['submit'] == 'true' else False
@@ -477,6 +482,8 @@ class TikuFallback(Tiku):
         active = []
         for provider in self.providers:
             try:
+                if provider._conf is None and self._conf is not None:
+                    provider.config_set(self._conf)
                 provider.init_tiku()
                 if not provider.DISABLE:
                     active.append(provider)
@@ -587,7 +594,7 @@ class TikuYanxi(Tiku):
                 # 'type':q_info['type'], #修复478题目类型与答案类型不符（不想写后处理了）
                 # 没用，就算有type和options，言溪题库还是可能返回类型不符，问了客服，type仅用于收集
             },
-            verify=False
+            verify=self.ssl_verify
         )
         if res.status_code == 200:
             res_json = res.json()
@@ -899,7 +906,7 @@ class TikuLike(Tiku):
                 self.query_api,
                 json=request_data,
                 headers=temp_headers,
-                verify=False,
+                verify=self.ssl_verify,
                 timeout=self._timeout  # 添加超时设置
             )
         except requests.exceptions.Timeout:
@@ -1049,7 +1056,7 @@ class TikuLike(Tiku):
             res = requests.get(
                 self.balance_api,
                 headers=temp_headers,
-                verify=False,
+                verify=self.ssl_verify,
                 timeout=self._timeout
             )
             if res.status_code == 200:
@@ -1142,7 +1149,7 @@ class TikuAdapter(Tiku):
                 'options': [sub(r'^[A-Za-z]\.?、?\s?', '', option) for option in options.split('\n')],
                 'type': type
             },
-            verify=False
+            verify=self.ssl_verify
         )
         if res.status_code == 200:
             res_json = res.json()

@@ -10,7 +10,9 @@ COPY requirements.txt /app/requirements.txt
 
 RUN pip install --no-cache-dir -r requirements.txt -i ${PYPI_MIRROR}
 
-COPY . /app
+COPY main.py config_template.ini /app/
+COPY api /app/api
+COPY resource /app/resource
 
 # 创建非 root 运行用户、配置文件目录并授予工作目录读写权限
 RUN groupadd -r chaoxing && \

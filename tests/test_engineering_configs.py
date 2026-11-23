@@ -24,11 +24,17 @@ class EngineeringConfigTestCase(unittest.TestCase):
 
     def test_dockerfile_caches_deps_and_runs_as_non_root(self):
         content = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotRegex(content, r"(?m)^\s*COPY\s+\.")
         copy_req_idx = content.find("COPY requirements.txt")
-        copy_all_idx = content.find("COPY . /app")
+        pip_install_idx = content.find("RUN pip install")
+        copy_main_idx = content.find("COPY main.py config_template.ini /app/")
         self.assertNotEqual(copy_req_idx, -1)
-        self.assertNotEqual(copy_all_idx, -1)
-        self.assertLess(copy_req_idx, copy_all_idx)
+        self.assertNotEqual(pip_install_idx, -1)
+        self.assertNotEqual(copy_main_idx, -1)
+        self.assertLess(copy_req_idx, pip_install_idx)
+        self.assertLess(pip_install_idx, copy_main_idx)
+        self.assertIn("COPY api /app/api", content)
+        self.assertIn("COPY resource /app/resource", content)
         self.assertIn("ARG PYPI_MIRROR", content)
         self.assertIn("chown -R chaoxing:chaoxing /app /config", content)
         self.assertIn("USER chaoxing", content)
@@ -36,13 +42,28 @@ class EngineeringConfigTestCase(unittest.TestCase):
     def test_dockerignore_excludes_sensitive_and_build_files(self):
         dockerignore = ROOT / ".dockerignore"
         self.assertTrue(dockerignore.is_file())
-        entries = {
+        entries = [
             line.strip()
             for line in dockerignore.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.strip().startswith("#")
-        }
-        for item in (".git", "cookies.txt", "config.ini", "*.log"):
+        ]
+        for item in (
+            ".git",
+            "*.log",
+            ".*.log",
+            ".cookies.txt",
+            "*cookies*.txt",
+            ".config.ini",
+            "config*.ini",
+            "!config_template.ini",
+            "cache.json*",
+            ".cache.json*",
+            "myConfig",
+            "start*.bat",
+            ".env*",
+        ):
             self.assertIn(item, entries)
+        self.assertLess(entries.index("config*.ini"), entries.index("!config_template.ini"))
 
     def test_ci_workflow_runs_tests_and_gates_windows_release(self):
         workflow = (ROOT / ".github" / "workflows" / "main.yml").read_text(encoding="utf-8")

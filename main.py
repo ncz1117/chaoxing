@@ -357,6 +357,8 @@ class JobProcessor:
         self.max_tries = 5
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
+        self.not_open_tasks: list[ChapterTask] = []
+        self._result_lock = threading.Lock()
         self.task_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.retry_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.wait_queue: PriorityQueue[ChapterTask] = PriorityQueue()
@@ -380,6 +382,7 @@ class JobProcessor:
         time.sleep(0.5)
         if hasattr(self.task_queue, "shutdown"):
             self.task_queue.shutdown()
+        return self.failed_tasks, self.not_open_tasks
 
     @log_error
     def worker_thread(self):
@@ -401,6 +404,8 @@ class JobProcessor:
                 case ChapterResult.NOT_OPEN:
                     if self.config["notopen_action"] == "continue":
                         logger.warning("章节未开启: {} - {}, 正在跳过", task.course["title"], task.point["title"])
+                        with self._result_lock:
+                            self.not_open_tasks.append(task)
                         self.task_queue.task_done()
                         continue
 
@@ -410,6 +415,8 @@ class JobProcessor:
                             "章节未开启: {} - {} 可能由于上一章节的章节检测未完成, 也可能由于该章节因为时效已关闭，"
                             "请手动检查完成并提交再重试。或者在配置中配置(自动跳过关闭章节/开启题库并启用提交)"
                             , task.course["title"], task.point["title"])
+                        with self._result_lock:
+                            self.not_open_tasks.append(task)
                         self.task_queue.task_done()
                         continue
 
@@ -423,14 +430,16 @@ class JobProcessor:
                                    self.max_tries)
                     if task.tries >= self.max_tries:
                         logger.error("任务重试次数达到上限: {} - {}", task.course["title"], task.point["title"])
-                        self.failed_tasks.append(task)
+                        with self._result_lock:
+                            self.failed_tasks.append(task)
                         self.task_queue.task_done()
                         continue
                     self.retry_queue.put(task)
 
                 case _:
                     logger.error("任务 {} 的状态无效 {}", task.result, task.point["title"])
-                    self.failed_tasks.append(task)
+                    with self._result_lock:
+                        self.failed_tasks.append(task)
                     self.task_queue.task_done()
 
     @log_error
@@ -506,34 +515,78 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict):
     tqdm.format_sizeof = _old_format_sizeof
 
 
+def _dedup_courses(courses):
+    """按 (courseId, clazzId) 去重课程列表，保持原有顺序."""
+    deduped = []
+    seen_keys = set()
+    for course in courses:
+        key = (course["courseId"], course["clazzId"])
+        if key not in seen_keys:
+            deduped.append(course)
+            seen_keys.add(key)
+    return deduped
+
+
+def _match_courses(all_course, target_ids):
+    """按课程ID筛选课程，并对未匹配的ID输出警告."""
+    cleaned_ids = [str(cid).strip() for cid in target_ids if str(cid).strip()]
+    available_ids = {str(course["courseId"]) for course in all_course}
+    unmatched_ids = [cid for cid in dict.fromkeys(cleaned_ids) if cid not in available_ids]
+    if unmatched_ids:
+        logger.warning(f"以下课程ID未在课程列表中找到: {', '.join(unmatched_ids)}")
+
+    target_set = set(cleaned_ids)
+    matched = [course for course in all_course if str(course["courseId"]) in target_set]
+    return _dedup_courses(matched), unmatched_ids
+
+
 def filter_courses(all_course, course_list):
     """过滤要学习的课程"""
-    if not course_list:
-        # 手动输入要学习的课程ID列表
-        print("*" * 10 + "课程列表" + "*" * 10)
-        for course in all_course:
-            print(f"ID: {course['courseId']} 班级ID: {course['clazzId']} 课程名: {course['title']}")
-        print("*" * 28)
-        print("提示: 同一 courseId 下若存在多个班级, 将分别完成。")
-        try:
-            course_list = input(
-                "请输入想要学习的课程列表,以逗号分隔,例: 2151141,189191,198198\n"
-            ).split(",")
-        except Exception as e:
-            raise InputFormatError("输入格式错误") from e
+    if not all_course:
+        raise InputFormatError("没有获取到可选课程，请检查登录状态和课程列表")
 
-    # 筛选需要学习的课程
-    course_task = []
-    seen_keys = set()
-    for course in all_course:
-        key = (course["courseId"], course["clazzId"])
-        if course["courseId"] in course_list and key not in seen_keys:
-            course_task.append(course)
-            seen_keys.add(key)
-    
-    # 如果没有指定课程，则学习所有课程
+    if not course_list:
+        while True:
+            # 手动输入要学习的课程ID列表
+            print("*" * 10 + "课程列表" + "*" * 10)
+            for course in all_course:
+                print(f"ID: {course['courseId']} 班级ID: {course['clazzId']} 课程名: {course['title']}")
+            print("*" * 28)
+            print("提示: 同一 courseId 下若存在多个班级, 将分别完成。")
+            try:
+                raw_input = input(
+                    "请输入想要学习的课程列表,以逗号分隔(如需学习全部课程请明确输入 all),例: 2151141,189191,198198\n"
+                )
+            except Exception as e:
+                raise InputFormatError("输入格式错误") from e
+
+            entered_ids = [item.strip() for item in raw_input.split(",") if item.strip()]
+            if not entered_ids:
+                raise InputFormatError("未选择课程；如需全部课程，请明确输入 all")
+
+            if len(entered_ids) == 1 and entered_ids[0].lower() == "all":
+                logger.info("已明确输入 all，将学习全部课程")
+                return _dedup_courses(all_course)
+
+            course_task, _ = _match_courses(all_course, entered_ids)
+            if course_task:
+                return course_task
+
+            logger.warning("未匹配到任何课程，请重新输入")
+
+    # 配置模式：筛选需要学习的课程
+    if isinstance(course_list, str):
+        course_list = course_list.split(",")
+    cleaned_ids = [str(cid).strip() for cid in course_list if str(cid).strip()]
+    if not cleaned_ids:
+        raise InputFormatError("未选择课程；如需全部课程，请明确输入 all")
+    if len(cleaned_ids) == 1 and cleaned_ids[0].lower() == "all":
+        logger.info("配置已明确指定 all，将学习全部课程")
+        return _dedup_courses(all_course)
+
+    course_task, unmatched_ids = _match_courses(all_course, cleaned_ids)
     if not course_task:
-        course_task = all_course
+        raise InputFormatError(f"配置的课程ID均未匹配: {', '.join(unmatched_ids or cleaned_ids)}")
 
     return course_task
 
@@ -589,22 +642,40 @@ def main():
 
         _old_format_sizeof = tqdm.format_sizeof
         tqdm.format_sizeof = format_time
+        try:
+            tasks = []
+            for course in course_task:
+                logger.info(f"正在读取课程章节: {course['title']}")
+                point_list = chaoxing.get_course_point(
+                    course["courseId"], course["clazzId"], course["cpi"]
+                )
+                for i, point in enumerate(point_list["points"]):
+                    task = ChapterTask(point=point, index=i, course=course)
+                    tasks.append(task)
 
-        tasks = []
-        for course in course_task:
-            logger.info(f"正在读取课程章节: {course['title']}")
-            point_list = chaoxing.get_course_point(
-                course["courseId"], course["clazzId"], course["cpi"]
+            if not tasks:
+                empty_msg = "chaoxing : 未获取到可学习的章节任务"
+                logger.warning(empty_msg)
+                notification.send(empty_msg)
+                return 1
+
+            # 全局并发执行所有课程的任务点
+            p = JobProcessor(chaoxing, tasks, common_config)
+            failed_tasks, not_open_tasks = p.run()
+        finally:
+            tqdm.format_sizeof = _old_format_sizeof
+
+        if failed_tasks or not_open_tasks:
+            for task in failed_tasks:
+                logger.warning(f"失败章节: {task.course['title']} - {task.point['title']}")
+            for task in not_open_tasks:
+                logger.warning(f"未开放章节: {task.course['title']} - {task.point['title']}")
+            summary_msg = (
+                f"chaoxing : 课程任务结束, 失败 {len(failed_tasks)} 个章节, 未开放 {len(not_open_tasks)} 个章节"
             )
-            for i, point in enumerate(point_list["points"]):
-                task = ChapterTask(point=point, index=i, course=course)
-                tasks.append(task)
-
-        # 全局并发执行所有课程的任务点
-        p = JobProcessor(chaoxing, tasks, common_config)
-        p.run()
-
-        tqdm.format_sizeof = _old_format_sizeof
+            logger.warning(summary_msg)
+            notification.send(summary_msg)
+            return 1
 
         logger.info("所有课程学习任务已完成")
         notification.send("chaoxing : 所有课程学习任务已完成")
@@ -617,6 +688,7 @@ def main():
                 increase_learning_count_for_course(chaoxing, course, common_config)
             logger.info("所有课程章节学习次数增加完成")
             notification.send("chaoxing : 所有课程章节学习次数增加完成")
+        return 0
         
     except SystemExit as e:
         if e.code != 0:
@@ -624,6 +696,7 @@ def main():
         sys.exit(e.code)
     except KeyboardInterrupt as e:
         logger.error(f"错误: 程序被用户手动中断, {e}")
+        return 130
     except BaseException as e:
         logger.error(f"错误: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
@@ -635,4 +708,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -2,6 +2,7 @@
 import argparse
 import configparser
 import enum
+import functools
 import sys
 import threading
 import time
@@ -29,16 +30,17 @@ except ImportError:
 
 
 class ChapterResult(enum.Enum):
-    SUCCESS = 0,
-    ERROR = 1,
-    NOT_OPEN = 2,
+    SUCCESS = 0
+    ERROR = 1
+    NOT_OPEN = 2
     PENDING = 3
 
 
 def log_error(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
-            func(*args, **kwargs)
+            return func(*args, **kwargs)
         except BaseException as e:
             logger.error(f"Error in thread {threading.current_thread().name}: {e}")
             traceback.print_exception(type(e), e, e.__traceback__)

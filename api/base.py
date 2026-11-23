@@ -423,8 +423,17 @@ class Chaoxing:
             "independentId": 0,
         }
         logger.trace("正在尝试登录...")
-        resp = _session.post(_url, headers=gc.HEADERS, data=_data)
-        if resp and resp.json()["status"] == True:
+        try:
+            resp = _session.post(_url, headers=gc.HEADERS, data=_data, timeout=10)
+            resp.raise_for_status()
+            payload = resp.json()
+        except (RequestException, ValueError) as e:
+            return {"status": False, "msg": f"登录请求失败: {e}"}
+
+        if not isinstance(payload, dict):
+            return {"status": False, "msg": "登录请求失败: 响应格式异常"}
+
+        if payload.get("status") is True:
             save_cookies(_session)
             SessionManager.update_cookies()
             logger.info("登录成功...")
@@ -435,8 +444,7 @@ class Chaoxing:
             except Exception as e:
                 logger.debug(f"获取当前登录用户名失败: {e}")
             return {"status": True, "msg": "登录成功"}
-        else:
-            return {"status": False, "msg": str(resp.json()["msg2"])}
+        return {"status": False, "msg": str(payload.get("msg2") or payload.get("msg") or "登录失败, 未知原因")}
 
     @staticmethod
     def get_name() -> str:

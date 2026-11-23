@@ -433,7 +433,7 @@ class Chaoxing:
         if not isinstance(payload, dict):
             return {"status": False, "msg": "登录请求失败: 响应格式异常"}
 
-        if payload.get("status") is True:
+        if payload.get("status") in (True, 1):
             save_cookies(_session)
             SessionManager.update_cookies()
             logger.info("登录成功...")

@@ -58,6 +58,28 @@ class SmallBugsTestCase(unittest.TestCase):
         self.assertIs(result["status"], False)
         self.assertEqual(result["msg"], "登录失败, 未知原因")
 
+    def test_login_accepts_boolean_true_and_numeric_one(self):
+        for body, expected_status in (
+            (b'{"status": true}', True),
+            (b'{"status": 1}', True),
+            (b'{"status": false}', False),
+            (b'{"status": 0}', False),
+        ):
+            with self.subTest(body=body):
+                resp = requests.Response()
+                resp.status_code = 200
+                resp._content = body
+                with patch("api.base.requests.Session.post", return_value=resp), \
+                     patch("api.base.save_cookies") as mock_save, \
+                     patch("api.base.SessionManager.update_cookies"), \
+                     patch.object(Chaoxing, "get_name", return_value=""):
+                    result = self._make_chaoxing().login(login_with_cookies=False)
+                self.assertIs(result["status"], expected_status)
+                if expected_status:
+                    mock_save.assert_called_once()
+                else:
+                    mock_save.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

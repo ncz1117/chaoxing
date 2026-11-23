@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import traceback
+from queue import PriorityQueue, ShutDown
 from dataclasses import dataclass
 from typing import Any
 from tqdm import tqdm
@@ -19,15 +20,6 @@ from api.notification import Notification
 from api.live import Live
 from api.live_process import LiveProcessor
 from api.process import increase_learning_count_for_course
-
-try:
-    from queue import PriorityQueue, ShutDown
-except ImportError:
-    from queue import PriorityQueue
-
-
-    class ShutDown(Exception):
-        pass
 
 
 class ChapterResult(enum.Enum):
@@ -361,7 +353,6 @@ class JobProcessor:
         self._result_lock = threading.Lock()
         self.task_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.retry_queue: PriorityQueue[ChapterTask] = PriorityQueue()
-        self.wait_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.threads: list[threading.Thread] = []
         self.worker_num = config["jobs"]
         self.config = config
@@ -420,7 +411,6 @@ class JobProcessor:
                         self.task_queue.task_done()
                         continue
 
-                    # self.wait_queue.put(task)
                     self.retry_queue.put(task)
 
                 case ChapterResult.ERROR:
@@ -488,31 +478,6 @@ def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str,
             return ChapterResult.ERROR
 
     return ChapterResult.SUCCESS
-
-
-def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict):
-    """处理单个课程"""
-    logger.info(f"开始学习课程: {course['title']}")
-
-    # 获取当前课程的所有章节
-    point_list = chaoxing.get_course_point(
-        course["courseId"], course["clazzId"], course["cpi"]
-    )
-
-    # 为了支持课程任务回滚, 采用下标方式遍历任务点
-
-    _old_format_sizeof = tqdm.format_sizeof
-    tqdm.format_sizeof = format_time
-
-    tasks = []
-
-    for i, point in enumerate(point_list["points"]):
-        task = ChapterTask(point=point, index=i, course=course)
-        tasks.append(task)
-    p = JobProcessor(chaoxing, tasks, config)
-    p.run()
-
-    tqdm.format_sizeof = _old_format_sizeof
 
 
 def _dedup_courses(courses):

@@ -82,11 +82,11 @@ class TikuLike(Tiku):
     def _query_single(self, token: str = "", query: str = "") -> str:
         """
         查询单个问题的答案
-        
+
         Args:
             token: API访问令牌
             query: 查询的问题内容
-            
+
         Returns:
             查询到的答案，如果失败则返回None
         """
@@ -154,10 +154,10 @@ class TikuLike(Tiku):
     def _parse_response(self, response):
         """
         解析API响应
-        
+
         Args:
             response: HTTP响应对象
-            
+
         Returns:
             解析后的答案，如果解析失败则返回None
         """
@@ -201,11 +201,11 @@ class TikuLike(Tiku):
     def _extract_answer_by_type(self, q_type: str, answer: dict) -> str:
         """
         根据题目类型提取答案
-        
+
         Args:
             q_type: 题目类型
             answer: 答案字典
-            
+
         Returns:
             提取的答案文本
         """

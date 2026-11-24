@@ -33,12 +33,100 @@ class CacheDAO:
     @Reference: https://github.com/SocialSisterYi/xuexiaoyi-to-xuexitong-tampermonkey-proxy
     """
     DEFAULT_CACHE_FILE = "cache.json"
+    _registry_lock = threading.Lock()
+    _path_locks: dict[Path, threading.RLock] = {}
+    _path_caches: dict[Path, dict] = {}
+    _path_sigs: dict[Path, Optional[tuple[int, int, int]]] = {}
 
-    def __init__(self, file: str = DEFAULT_CACHE_FILE):
-        self.cache_file = Path(file)
-        self._lock = threading.RLock()
-        if not self.cache_file.is_file():
-            self._write_cache({})
+    @classmethod
+    def _get_lock_for_path(cls, path: Path) -> threading.RLock:
+        with cls._registry_lock:
+            lock = cls._path_locks.get(path)
+            if lock is None:
+                lock = threading.RLock()
+                cls._path_locks[path] = lock
+            return lock
+
+    def __init__(self, file: Optional[str] = None):
+        self.cache_file = Path(file or self.DEFAULT_CACHE_FILE)
+        self._cache_key = self.cache_file.resolve()
+        self._lock = self._get_lock_for_path(self._cache_key)
+        self._ensure_loaded()
+
+    @staticmethod
+    def _stat_sig(path: Path) -> Optional[tuple[int, int, int]]:
+        try:
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            return None
+
+    def _file_sig(self) -> Optional[tuple[int, int, int]]:
+        return self._stat_sig(self.cache_file)
+
+    def _ensure_loaded(self) -> dict:
+        with self._lock:
+            sig = self._file_sig()
+            cached = self._path_caches.get(self._cache_key)
+            cached_sig = self._path_sigs.get(self._cache_key)
+            if cached is not None and sig is not None and sig == cached_sig:
+                return dict(cached)
+            if sig is None:
+                data = {}
+                written_sig = self._write_cache(data)
+                if written_sig is not None:
+                    self._path_caches[self._cache_key] = dict(data)
+                    self._path_sigs[self._cache_key] = written_sig
+                return data
+
+            data: dict = {}
+            for _ in range(3):
+                sig_before = self._file_sig()
+                if sig_before is None:
+                    data = {}
+                    written_sig = self._write_cache(data)
+                    if written_sig is not None:
+                        self._path_caches[self._cache_key] = dict(data)
+                        self._path_sigs[self._cache_key] = written_sig
+                    return data
+                data = self._read_cache()
+                sig_after = self._file_sig()
+                if sig_after is not None and sig_before == sig_after:
+                    snapshot = dict(data)
+                    self._path_caches[self._cache_key] = snapshot
+                    self._path_sigs[self._cache_key] = sig_after
+                    return dict(snapshot)
+
+            # 文件在读取期间持续被外部替换，不绑定内存签名，确保下次访问继续重读
+            self._path_caches.pop(self._cache_key, None)
+            self._path_sigs.pop(self._cache_key, None)
+            return dict(data)
+
+    def _recover_or_backup(self, error_label: str) -> dict:
+        # 尝试从原始二进制中以 utf-8 忽略错误地恢复有效 JSON 段
+        try:
+            raw = self.cache_file.read_bytes()
+            text = raw.decode("utf-8", errors="ignore")
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and start < end:
+                try:
+                    recovered = json.loads(text[start:end + 1])
+                    if isinstance(recovered, dict):
+                        return recovered
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # 若无法恢复，备份损坏文件并返回空缓存
+        try:
+            bak_name = f"{self.cache_file.name}.bak.{int(time.time())}"
+            bak_path = self.cache_file.with_name(bak_name)
+            shutil.copy2(self.cache_file, bak_path)
+            logger.error(f"{error_label}，已备份为: {bak_path}，将使用空缓存继续运行")
+        except Exception as ex:
+            logger.error(f"备份损坏缓存失败: {ex}")
+        return {}
 
     def _read_cache(self) -> dict:
         # 新增缓存文件读取的异常处理
@@ -48,58 +136,22 @@ class CacheDAO:
                     return {}
                 try:
                     with self.cache_file.open("r", encoding="utf8") as fp:
-                        return json.load(fp)
+                        data = json.load(fp)
+                    if not isinstance(data, dict):
+                        logger.error("缓存文件根节点不是 JSON 对象，尝试恢复...")
+                        return self._recover_or_backup("缓存文件格式异常")
+                    return data
                 except json.JSONDecodeError as e:
                     logger.error(f"缓存文件 JSON 解析失败: {e}, 尝试恢复...")
-                    # 尝试从原始二进制中以 utf-8 忽略错误地恢复有效 JSON 段
-                    try:
-                        raw = self.cache_file.read_bytes()
-                        text = raw.decode("utf-8", errors="ignore")
-                        start = text.find('{')
-                        end = text.rfind('}')
-                        if start != -1 and end != -1 and start < end:
-                            try:
-                                return json.loads(text[start:end + 1])
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    # 若无法恢复，备份损坏文件并返回空缓存
-                    try:
-                        bak_name = f"{self.cache_file.name}.bak.{int(time.time())}"
-                        bak_path = self.cache_file.with_name(bak_name)
-                        shutil.copy2(self.cache_file, bak_path)
-                        logger.error(f"缓存文件已损坏，已备份为: {bak_path}，将使用空缓存继续运行")
-                    except Exception as ex:
-                        logger.error(f"备份损坏缓存失败: {ex}")
-                    return {}
+                    return self._recover_or_backup("缓存文件已损坏")
                 except UnicodeDecodeError as e:
                     logger.error(f"缓存文件编码读取失败: {e}, 采用恢复策略...")
-                    try:
-                        raw = self.cache_file.read_bytes()
-                        text = raw.decode("utf-8", errors="ignore")
-                        start = text.find('{')
-                        end = text.rfind('}')
-                        if start != -1 and end != -1 and start < end:
-                            try:
-                                return json.loads(text[start:end + 1])
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        bak_name = f"{self.cache_file.name}.bak.{int(time.time())}"
-                        bak_path = self.cache_file.with_name(bak_name)
-                        shutil.copy2(self.cache_file, bak_path)
-                        logger.error(f"缓存文件编码错误，已备份为: {bak_path}，将使用空缓存继续运行")
-                    except Exception as ex:
-                        logger.error(f"备份损坏缓存失败: {ex}")
-                    return {}
+                    return self._recover_or_backup("缓存文件编码错误")
         except Exception as e:
             logger.error(f"读取缓存异常: {e}")
             return {}
 
-    def _write_cache(self, data: dict) -> None:
+    def _write_cache(self, data: dict) -> Optional[tuple[int, int, int]]:
         # 为缓存写入加锁，防止并发写入损坏文件
         try:
             with self._lock:
@@ -113,7 +165,9 @@ class CacheDAO:
                         json.dump(data, fp, ensure_ascii=False, indent=4)
                         fp.flush()
                         os.fsync(fp.fileno())
+                    written_sig = self._stat_sig(Path(tmp_path))
                     os.replace(tmp_path, str(self.cache_file))
+                    return written_sig
                 except Exception as e:
                     # 清理临时文件
                     try:
@@ -122,19 +176,26 @@ class CacheDAO:
                     except Exception:
                         pass
                     logger.error(f"Failed to write cache atomically: {e}")
+                    return None
         except IOError as e:
             logger.error(f"Failed to write cache: {e}")
+            return None
 
     def get_cache(self, question: str) -> Optional[str]:
-        data = self._read_cache()
-        return data.get(question)
+        with self._lock:
+            data = self._ensure_loaded()
+            return data.get(question)
 
     def add_cache(self, question: str, answer: str) -> None:
         # 为缓存写入加锁，防止并发写入损坏文件
         with self._lock:
-            data = self._read_cache()
-            data[question] = answer
-            self._write_cache(data)
+            current = self._ensure_loaded()
+            updated = dict(current)
+            updated[question] = answer
+            written_sig = self._write_cache(updated)
+            if written_sig is not None:
+                self._path_caches[self._cache_key] = updated
+                self._path_sigs[self._cache_key] = written_sig
 
 
 class Tiku(ABC):
@@ -245,27 +306,25 @@ class Tiku(ABC):
             logger.debug(f"处理后标题：{q_info['title']}")
 
         # 先过缓存（若存在章节检测错误反馈，说明处于重做模式，跳过缓存让大模型参考反馈重新作答）
+        cache_dao = CacheDAO()
         if not getattr(self, 'work_feedback', None):
-            cache_dao = CacheDAO()
             answer = cache_dao.get_cache(q_info['title'])
             if answer:
                 logger.info(f"从缓存中获取答案：{q_info['title']} -> {answer}")
                 return answer.strip()
-            else:
-                answer = self._query(q_info)
-        else:
-            answer = self._query(q_info)
-            if answer:
-                answer = answer.strip()
-                logger.info(f"从{self.name}获取答案：{q_info['title']} -> {answer}")
-                if check_answer(answer, q_info['type'], self):
-                    cache_dao.add_cache(q_info['title'], answer)
-                    return answer
-                else:
-                    logger.info(f"从{self.name}获取到的答案类型与题目类型不符，已舍弃")
-                    return None
 
-            logger.error(f"从{self.name}获取答案失败：{q_info['title']}")
+        answer = self._query(q_info)
+        if answer:
+            answer = answer.strip()
+            logger.info(f"从{self.name}获取答案：{q_info['title']} -> {answer}")
+            if check_answer(answer, q_info['type'], self):
+                cache_dao.add_cache(q_info['title'], answer)
+                return answer
+            else:
+                logger.info(f"从{self.name}获取到的答案类型与题目类型不符，已舍弃")
+                return None
+
+        logger.error(f"从{self.name}获取答案失败：{q_info['title']}")
         return None
 
     def query_all(self, q_list: list[dict], query_delay: float = 0.0) -> list[Optional[str]]:

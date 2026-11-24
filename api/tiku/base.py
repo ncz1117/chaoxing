@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 import configparser
 import os
 import random
-import time
-from abc import ABC, abstractmethod
 from re import sub
-from typing import Optional
+import time
+from typing import Optional, Union
 
 from api.answer_check import check_answer
+from api.config import TikuConfig, parse_submit_flag, str_to_bool
 from api.logger import logger
 from api.tiku.cache import CacheDAO
 
@@ -65,15 +67,15 @@ class Tiku(ABC):
         if not self._conf:
             self.config_set(self._get_conf())
         if self._conf is not None:
-            self.ssl_verify = str(self._conf.get("ssl_verify", "true")).strip().lower() not in (
-                "false", "0", "no", "off"
-            )
+            self.ssl_verify = str_to_bool(self._conf.get("ssl_verify", True), default=True)
         if not self.DISABLE:
             # 设置提交模式
-            self.SUBMIT = True if self._conf['submit'] == 'true' else False
-            self.COVER_RATE = float(self._conf['cover_rate'])
-            self.true_list = self._conf['true_list'].split(',')
-            self.false_list = self._conf['false_list'].split(',')
+            self.SUBMIT = parse_submit_flag(self._conf.get("submit", False))
+            self.COVER_RATE = float(self._conf.get("cover_rate", self.COVER_RATE))
+            raw_true = self._conf.get("true_list", "正确,对,√,是")
+            self.true_list = raw_true.split(",") if isinstance(raw_true, str) else [str(item) for item in raw_true]
+            raw_false = self._conf.get("false_list", "错误,错,×,否,不对,不正确")
+            self.false_list = raw_false.split(",") if isinstance(raw_false, str) else [str(item) for item in raw_false]
             # 调用自定义题库初始化
             self._init_tiku()
 
@@ -82,7 +84,12 @@ class Tiku(ABC):
         pass
 
     def config_set(self, config):
-        self._conf = config
+        if config is None or isinstance(config, TikuConfig):
+            self._conf = config
+        elif isinstance(config, Mapping):
+            self._conf = TikuConfig.from_mapping(config)
+        else:
+            self._conf = config
 
     def _get_conf(self):
         """
@@ -91,7 +98,7 @@ class Tiku(ABC):
         try:
             config = configparser.ConfigParser()
             config.read(self._config_path, encoding="utf8")
-            return config['tiku']
+            return TikuConfig.from_mapping(config["tiku"])
         except (KeyError, FileNotFoundError):
             logger.info("未找到tiku配置, 已忽略题库功能")
             self.DISABLE = True
@@ -235,35 +242,32 @@ class Tiku(ABC):
         return results
 
     @staticmethod
-    def get_tiku_from_config(config: Optional[dict] = None, config_path: Optional[str] = None):
+    def get_tiku_from_config(
+        config: Optional[Union[TikuConfig, Mapping]] = None,
+        config_path: Optional[str] = None,
+    ):
         """
         从配置文件加载题库, 这个配置可以是用户提供, 可以是默认配置文件
         """
-        conf = config
         path = config_path or Tiku.CONFIG_PATH
+        conf = TikuConfig.from_mapping(config) if config else None
         if not conf:
             # 尝试从默认配置文件加载
             try:
                 config_parser = configparser.ConfigParser()
                 config_parser.read(path, encoding="utf8")
-                conf = config_parser['tiku']
+                conf = TikuConfig.from_mapping(config_parser["tiku"])
             except (KeyError, FileNotFoundError):
                 logger.error("未找到题库配置, 已忽略题库功能")
                 dummy = DummyTiku(config_path=path)
                 return dummy
 
-        try:
-            cls_name = conf['provider']
-            if not cls_name:
-                raise KeyError
-        except KeyError:
-            logger.error("未找到题库配置, 已忽略题库功能")
-            dummy = DummyTiku(config_path=path)
-            return dummy
-
-        providers = [name.strip() for name in cls_name.split(',') if name.strip()]
+        providers = conf.providers
         if not providers:
-            logger.error("题库provider配置为空, 已忽略题库功能")
+            if not conf.provider:
+                logger.error("未找到题库配置, 已忽略题库功能")
+            else:
+                logger.error("题库provider配置为空, 已忽略题库功能")
             dummy = DummyTiku(config_path=path)
             return dummy
 

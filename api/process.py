@@ -1,7 +1,7 @@
 import time
 
+from api.config import CommonConfig, GlobalConst as gc
 from api.logger import logger
-from api.config import GlobalConst as gc
 
 
 def sec2time(seconds: int) -> str:
@@ -72,9 +72,9 @@ def increase_learning_count_for_course(chaoxing, course, config):
     Args:
         chaoxing: Chaoxing 实例
         course: 课程信息字典
-        config: 配置字典，需包含 target_count 字段
+        config: 配置对象或字典，需包含 target_count 字段
     """
-    target_count = config.get("target_count", 100)
+    target_count = config.target_count if isinstance(config, CommonConfig) else int(config.get("target_count", 100))
     logger.info(f"开始为课程 [{course['title']}] 增加章节学习次数, 目标总次数: {target_count}")
 
     # 获取课程所有章节

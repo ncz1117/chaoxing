@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import argparse
-import configparser
 import enum
 import functools
 import getpass
@@ -8,13 +7,21 @@ import sys
 import threading
 import time
 import traceback
-from queue import PriorityQueue, ShutDown
 from dataclasses import dataclass
-from typing import Any
+from queue import PriorityQueue, ShutDown
+from typing import Any, Union
 from tqdm import tqdm
 from api.answer import Tiku
-from api.base import Chaoxing, Account, StudyResult
-from api.exceptions import LoginError, InputFormatError
+from api.base import Account, Chaoxing, StudyResult
+from api.config import (
+    CommonConfig,
+    NotificationConfig,
+    TikuConfig,
+    build_app_config_from_args,
+    load_app_config,
+    str_to_bool as str_to_bool,
+)
+from api.exceptions import InputFormatError, LoginError
 from api.logger import logger
 from api.notification import Notification
 from api.live import Live
@@ -40,12 +47,6 @@ def log_error(func):
             raise
 
     return wrapper
-
-
-def str_to_bool(value):
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def parse_args():
@@ -114,82 +115,14 @@ def parse_args():
 
 def load_config_from_file(config_path):
     """从配置文件加载设置"""
-    config = configparser.ConfigParser()
-    config.read(config_path, encoding="utf8")
-
-    common_config: dict[str, Any] = {}
-    tiku_config: dict[str, Any] = {}
-    notification_config: dict[str, Any] = {}
-
-    # 检查并读取common节
-    if config.has_section("common"):
-        common_config = dict(config.items("common"))
-        # 处理course_list，将字符串转换为列表
-        if "course_list" in common_config and common_config["course_list"]:
-            common_config["course_list"] = [item.strip() for item in common_config["course_list"].split(",") if
-                                            item.strip()]
-        # 处理speed，将字符串转换为浮点数
-        if "speed" in common_config:
-            common_config["speed"] = float(common_config["speed"])
-        if "jobs" in common_config:
-            common_config["jobs"] = int(common_config["jobs"])
-        # 处理notopen_action，设置默认值为retry
-        if "notopen_action" not in common_config:
-            common_config["notopen_action"] = "retry"
-        if "retry_interval" in common_config:
-            common_config["retry_interval"] = float(common_config["retry_interval"])
-        else:
-            common_config["retry_interval"] = 1.0
-        if "work_max_retries" in common_config:
-            try:
-                common_config["work_max_retries"] = int(common_config["work_max_retries"])
-            except ValueError:
-                common_config["work_max_retries"] = 3
-        else:
-            common_config["work_max_retries"] = 3
-        if "work_redo_enabled" in common_config:
-            common_config["work_redo_enabled"] = str_to_bool(common_config["work_redo_enabled"])
-        if "use_cookies" in common_config:
-            common_config["use_cookies"] = str_to_bool(common_config["use_cookies"])
-        if "add_learning_count" in common_config:
-            common_config["add_learning_count"] = str_to_bool(common_config["add_learning_count"])
-        if "target_count" in common_config:
-            common_config["target_count"] = int(common_config["target_count"])
-        if "username" in common_config and common_config["username"] is not None:
-            common_config["username"] = common_config["username"].strip()
-        if "password" in common_config and common_config["password"] is not None:
-            common_config["password"] = common_config["password"].strip()
-
-    # 检查并读取tiku节
-    if config.has_section("tiku"):
-        tiku_config = dict(config.items("tiku"))
-        # 处理数值类型转换
-        for key in ["delay", "cover_rate"]:
-            if key in tiku_config:
-                tiku_config[key] = float(tiku_config[key])
-
-    # 检查并读取notification节
-    if config.has_section("notification"):
-        notification_config = dict(config.items("notification"))
-
-    return common_config, tiku_config, notification_config
+    app_cfg = load_app_config(config_path)
+    return app_cfg.common, app_cfg.tiku, app_cfg.notification
 
 
 def build_config_from_args(args):
     """从命令行参数构建配置"""
-    common_config = {
-        "use_cookies": args.use_cookies,
-        "username": args.username,
-        "password": args.password,
-        "course_list": [item.strip() for item in args.list.split(",") if item.strip()] if args.list else None,
-        "speed": args.speed or 1.0,
-        "jobs": args.jobs,
-        "notopen_action": args.notopen_action or "retry",
-        "retry_interval": args.retry_interval or 1.0,
-        "add_learning_count": args.add_learning_count,
-        "target_count": args.target_count,
-    }
-    return common_config, {}, {}
+    app_cfg = build_app_config_from_args(args)
+    return app_cfg.common, app_cfg.tiku, app_cfg.notification
 
 
 def init_config():
@@ -205,9 +138,12 @@ def init_config():
 
 def init_chaoxing(common_config, tiku_config, config_path=None):
     """初始化超星实例"""
-    username = common_config.get("username", "")
-    password = common_config.get("password", "")
-    use_cookies = common_config.get("use_cookies", False)
+    common_cfg = CommonConfig.from_mapping(common_config)
+    tiku_cfg = TikuConfig.from_mapping(tiku_config)
+
+    username = common_cfg.username
+    password = common_cfg.password
+    use_cookies = common_cfg.use_cookies
 
     # 如果没有提供用户名密码，从命令行获取
     if (not username or not password) and not use_cookies:
@@ -217,42 +153,29 @@ def init_chaoxing(common_config, tiku_config, config_path=None):
     account = Account(username, password)
 
     # 设置题库
-    tiku = Tiku.get_tiku_from_config(tiku_config, config_path=config_path)  # 载入题库
+    tiku = Tiku.get_tiku_from_config(tiku_cfg, config_path=config_path)  # 载入题库
     tiku.init_tiku()  # 初始化题库
-
-    # 获取查询延迟设置
 
     # 检查大模型连接（如果使用的是大模型题库）
     # 根据配置文件中的 provider 判断是否为大模型题库
-    provider = tiku_config.get('provider', '')
-    provider_list = [name.strip() for name in provider.split(',') if name.strip()]
-    if any(name in ['AI', 'SiliconFlow'] for name in provider_list):
-        check_connection = tiku_config.get('check_llm_connection', 'true').lower() == 'true'
-        if check_connection:
-            logger.info(f'正在验证大模型配置 (provider={provider})...')
+    if any(name in ["AI", "SiliconFlow"] for name in tiku_cfg.providers):
+        if tiku_cfg.check_llm_connection:
+            logger.info(f"正在验证大模型配置 (provider={tiku_cfg.provider})...")
             if not tiku.check_llm_connection():
-                logger.error('大模型连接检查失败')
-                choice = input('大模型连接检查失败，无法准确答题，是否继续运行？(Y/n): ').strip().lower()
+                logger.error("大模型连接检查失败")
+                choice = input("大模型连接检查失败，无法准确答题，是否继续运行？(Y/n): ").strip().lower()
                 # 直接回车默认继续运行
-                if choice not in ('', 'y', 'yes'):
-                    raise RuntimeError('用户取消运行')
-                logger.info('用户选择继续运行...')
-
-    query_delay = tiku_config.get("delay", 0)
-
-    # 章节检测答错后允许的最大重做次数（答错时反馈给AI并重新提交，直到全部正确）
-    work_max_retries = common_config.get("work_max_retries", 3)
-
-    # 是否允许自动重做(默认false: 仅检查并记录成绩, 适用于只允许作答一次的课程)
-    work_redo_enabled = common_config.get("work_redo_enabled", False)
+                if choice not in ("", "y", "yes"):
+                    raise RuntimeError("用户取消运行")
+                logger.info("用户选择继续运行...")
 
     # 实例化超星API
     chaoxing = Chaoxing(
         account=account,
         tiku=tiku,
-        query_delay=query_delay,
-        work_max_retries=work_max_retries,
-        work_redo_enabled=work_redo_enabled,
+        query_delay=tiku_cfg.delay,
+        work_max_retries=common_cfg.work_max_retries,
+        work_redo_enabled=common_cfg.work_redo_enabled,
     )
 
     return chaoxing
@@ -339,13 +262,11 @@ class ChapterTask:
 
 
 class JobProcessor:
-    def __init__(self, chaoxing: Chaoxing, tasks: list[ChapterTask], config: dict[str, Any]):
+    def __init__(self, chaoxing: Chaoxing, tasks: list[ChapterTask], config: Union[CommonConfig, dict[str, Any]]):
         """初始化任务处理器."""
-        if "jobs" not in config or not config["jobs"]:
-            config["jobs"] = 4
-
+        cfg = CommonConfig.from_mapping(config)
         self.chaoxing = chaoxing
-        self.speed = config["speed"]
+        self.speed = cfg.speed
         self.max_tries = 5
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
@@ -354,9 +275,9 @@ class JobProcessor:
         self.task_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.retry_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.threads: list[threading.Thread] = []
-        self.worker_num = config["jobs"]
-        self.config = config
-        self.retry_interval = config.get("retry_interval", 1.0)
+        self.worker_num = cfg.jobs
+        self.config = cfg
+        self.retry_interval = cfg.retry_interval
 
     def run(self):
         for task in self.tasks:
@@ -393,7 +314,7 @@ class JobProcessor:
                     logger.debug(f"unfinished task: {self.task_queue.unfinished_tasks}")
 
                 case ChapterResult.NOT_OPEN:
-                    if self.config["notopen_action"] == "continue":
+                    if self.config.notopen_action == "continue":
                         logger.warning("章节未开启: {} - {}, 正在跳过", task.course["title"], task.point["title"])
                         with self._result_lock:
                             self.not_open_tasks.append(task)
@@ -572,16 +493,11 @@ def main():
     """主程序入口"""
     try:
         # 初始化配置
-        common_config, tiku_config, notification_config, config_path = init_config()
+        raw_common, raw_tiku, raw_notification, config_path = init_config()
+        common_config = CommonConfig.from_mapping(raw_common)
+        tiku_config = TikuConfig.from_mapping(raw_tiku)
+        notification_config = NotificationConfig.from_mapping(raw_notification)
 
-        # 强制播放按照配置文件调节
-        common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
-        common_config["notopen_action"] = common_config.get("notopen_action", "retry")
-        
-        # 初始化增加章节学习次数配置
-        add_learning_count = str_to_bool(common_config.get("add_learning_count", False))
-        target_count = int(common_config.get("target_count", 100))
-        
         # 初始化超星实例
         chaoxing = init_chaoxing(common_config, tiku_config, config_path=config_path)
 
@@ -592,7 +508,7 @@ def main():
         notification.init_notification()
 
         # 检查当前登录状态
-        _login_state = chaoxing.login(login_with_cookies=common_config.get("use_cookies", False))
+        _login_state = chaoxing.login(login_with_cookies=common_config.use_cookies)
         if not _login_state["status"]:
             raise LoginError(_login_state["msg"])
 
@@ -600,7 +516,7 @@ def main():
         all_course = chaoxing.get_course_list()
 
         # 过滤要学习的课程
-        course_task = filter_courses(all_course, common_config.get("course_list"))
+        course_task = filter_courses(all_course, common_config.course_list)
 
         # 开始学习
         logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
@@ -646,15 +562,14 @@ def main():
         notification.send("chaoxing : 所有课程学习任务已完成")
 
         # 刷课完成后，如果开启了增加章节学习次数，则执行
-        if add_learning_count:
+        if common_config.add_learning_count:
             logger.info("刷课完成，开始增加章节学习次数...")
-            common_config["target_count"] = target_count
             for course in course_task:
                 increase_learning_count_for_course(chaoxing, course, common_config)
             logger.info("所有课程章节学习次数增加完成")
             notification.send("chaoxing : 所有课程章节学习次数增加完成")
         return 0
-        
+
     except SystemExit as e:
         if e.code != 0:
             logger.error(f"错误: 程序异常退出, 返回码: {e.code}")

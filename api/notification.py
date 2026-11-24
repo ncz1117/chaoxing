@@ -3,12 +3,14 @@
 支持多种通知服务，如ServerChan、Qmsg和Bark。
 """
 
-import configparser
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from collections.abc import Mapping
+import configparser
+from typing import Any, Optional, Union
 
 import requests
 
+from api.config import NotificationConfig
 from api.logger import logger
 
 
@@ -28,26 +30,31 @@ class NotificationService(ABC):
         self._conf = None
         self.disabled = False
 
-    def config_set(self, config: Dict[str, str]) -> None:
+    def config_set(self, config: Optional[Union[NotificationConfig, Mapping[str, Any]]]) -> None:
         """
         设置通知服务的配置
-        
-        Args:
-            config: 包含配置参数的字典
-        """
-        self._conf = config
 
-    def _load_config_from_file(self) -> Optional[Dict[str, str]]:
+        Args:
+            config: 包含配置参数的字典或 NotificationConfig 对象
+        """
+        if config is None or isinstance(config, NotificationConfig):
+            self._conf = config
+        elif isinstance(config, Mapping):
+            self._conf = NotificationConfig.from_mapping(config)
+        else:
+            self._conf = config
+
+    def _load_config_from_file(self) -> Optional[NotificationConfig]:
         """
         从配置文件中加载通知服务的配置
-        
+
         Returns:
-            成功返回配置字典，失败返回None
+            成功返回 NotificationConfig 对象，失败返回None
         """
         try:
             config = configparser.ConfigParser()
             config.read(self.CONFIG_PATH, encoding="utf8")
-            return config['notification']
+            return NotificationConfig.from_mapping(config["notification"])
         except (KeyError, FileNotFoundError):
             logger.info("未找到notification配置，已忽略外部通知功能")
             self.disabled = True
@@ -95,13 +102,15 @@ class NotificationFactory:
     """
 
     @staticmethod
-    def create_service(config: Optional[Dict[str, str]] = None) -> NotificationService:
+    def create_service(
+        config: Optional[Union[NotificationConfig, Mapping[str, Any]]] = None,
+    ) -> NotificationService:
         """
         根据配置创建通知服务实例
-        
+
         Args:
             config: 通知服务的配置，如果为None则从配置文件加载
-            
+
         Returns:
             通知服务实例
         """

@@ -64,7 +64,7 @@ class SecurityHardeningTestCase(unittest.TestCase):
         with patch("api.base.SessionManager.update_cookies"), \
              patch("api.base.SessionManager.get_session", return_value=fake_session), \
              patch.object(Chaoxing, "_validate_cookie_session", return_value=False), \
-             patch("api.base.logger.debug", side_effect=lambda msg, *a, **kw: debug_messages.append(str(msg) + " " + str(a))):
+             patch("api.client.login.logger.debug", side_effect=lambda msg, *a, **kw: debug_messages.append(str(msg) + " " + str(a))):
             cx = Chaoxing()
             cx.login(login_with_cookies=True)
 

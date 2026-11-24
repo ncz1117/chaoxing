@@ -16,7 +16,7 @@ from api.base import SessionManager  # noqa: E402
 class SessionManagerTestCase(unittest.TestCase):
     def setUp(self):
         self.cookies = {"session": "old-val", "stale": "to-be-removed"}
-        self.cookie_patch = patch("api.base.use_cookies", side_effect=lambda: dict(self.cookies))
+        self.cookie_patch = patch("api.client.session.use_cookies", side_effect=lambda: dict(self.cookies))
         self.cookie_patch.start()
         SessionManager.close_session()
         SessionManager.update_cookies()

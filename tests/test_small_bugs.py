@@ -35,7 +35,7 @@ class SmallBugsTestCase(unittest.TestCase):
         resp = requests.Response()
         resp.status_code = 500
         resp._content = b"Internal Server Error"
-        with patch("api.base.requests.Session.post", return_value=resp):
+        with patch("api.client.login.requests.Session.post", return_value=resp):
             result = self._make_chaoxing().login(login_with_cookies=False)
         self.assertIs(result["status"], False)
         self.assertTrue(result["msg"])
@@ -44,7 +44,7 @@ class SmallBugsTestCase(unittest.TestCase):
         resp = requests.Response()
         resp.status_code = 200
         resp._content = b"<html>not json</html>"
-        with patch("api.base.requests.Session.post", return_value=resp):
+        with patch("api.client.login.requests.Session.post", return_value=resp):
             result = self._make_chaoxing().login(login_with_cookies=False)
         self.assertIs(result["status"], False)
         self.assertTrue(result["msg"])
@@ -53,7 +53,7 @@ class SmallBugsTestCase(unittest.TestCase):
         resp = requests.Response()
         resp.status_code = 200
         resp._content = b'{"status": false}'
-        with patch("api.base.requests.Session.post", return_value=resp):
+        with patch("api.client.login.requests.Session.post", return_value=resp):
             result = self._make_chaoxing().login(login_with_cookies=False)
         self.assertIs(result["status"], False)
         self.assertEqual(result["msg"], "登录失败, 未知原因")
@@ -69,8 +69,8 @@ class SmallBugsTestCase(unittest.TestCase):
                 resp = requests.Response()
                 resp.status_code = 200
                 resp._content = body
-                with patch("api.base.requests.Session.post", return_value=resp), \
-                     patch("api.base.save_cookies") as mock_save, \
+                with patch("api.client.login.requests.Session.post", return_value=resp), \
+                     patch("api.client.login.save_cookies") as mock_save, \
                      patch("api.base.SessionManager.update_cookies"), \
                      patch.object(Chaoxing, "get_name", return_value=""):
                     result = self._make_chaoxing().login(login_with_cookies=False)

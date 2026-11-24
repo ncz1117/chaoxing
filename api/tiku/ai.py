@@ -162,7 +162,7 @@ class AI(Tiku):
             response = json.loads(remove_md_json_wrapper(completion.choices[0].message.content))
             sep = "\n"
             return sep.join(response['Answer']).strip()
-        except:
+        except Exception:
             logger.error("无法解析大模型输出内容")
             return None
 

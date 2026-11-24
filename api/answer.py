@@ -13,7 +13,19 @@ from api.tiku import (
     TikuLike,
     TikuManual,
     TikuYanxi,
-    __all__,
 )
 
-__all__ = list(__all__)
+__all__ = [
+    "CacheDAO",
+    "Tiku",
+    "DummyTiku",
+    "TikuFallback",
+    "TikuYanxi",
+    "TikuGo",
+    "TikuLike",
+    "TikuAdapter",
+    "AI",
+    "SiliconFlow",
+    "TikuManual",
+    "PROVIDER_REGISTRY",
+]

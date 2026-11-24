@@ -1,7 +1,16 @@
 try:
-    from requests.exceptions import JSONDecodeError
+    from requests.exceptions import JSONDecodeError as JSONDecodeError
 except ImportError:
-    from json import JSONDecodeError
+    from json import JSONDecodeError as JSONDecodeError
+
+__all__ = [
+    "JSONDecodeError",
+    "LoginError",
+    "InputFormatError",
+    "MaxRollBackExceeded",
+    "MaxRetryExceeded",
+    "FontDecodeError",
+]
 
 
 class LoginError(Exception):

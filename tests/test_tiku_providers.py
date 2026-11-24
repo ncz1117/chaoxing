@@ -222,17 +222,21 @@ class TikuProvidersTestCase(unittest.TestCase):
             200,
             {"results": {"output": {"questionType": "JUDGMENT", "answer": {"isCorrect": True}}}},
         )
-        with patch("api.tiku.like.random.choice", side_effect=["tok1", "tok2", "tok2", "tok2"]), \
+        with patch("api.tiku.like.random.choice", side_effect=["tok1", "tok2", "tok2"]), \
              patch("api.tiku.like.requests.post", side_effect=[choice_resp, blank_resp]) as mock_post:
             self.assertEqual(provider._query({"title": "多选", "type": "multiple", "options": ["A. 选项一", "B. 选项二"]}), "A. 选项一\nB. 选项二")
             self.assertEqual(provider._balance["tok2"], 1)
             self.assertEqual(provider._query({"title": "填空", "type": "completion", "options": ""}), "空1\n空2")
             self.assertEqual(provider._balance["tok2"], 0)
 
-        # 所有 token 余额耗尽 -> 直接返回 None，不再发起 post
-        self.assertIsNone(provider._query({"title": "无余额", "type": "judgement", "options": ""}))
         self.assertEqual(mock_post.call_count, 2)
         self.assertIs(mock_post.call_args.kwargs["verify"], False)
+
+        # 所有 token 余额耗尽 -> 直接返回 None，不再发起 post
+        with patch("api.tiku.like.random.choice", return_value="tok2"), \
+             patch("api.tiku.like.requests.post") as exhausted_post:
+            self.assertIsNone(provider._query({"title": "无余额", "type": "judgement", "options": ""}))
+        exhausted_post.assert_not_called()
 
         # 恢复余额后验证 JUDGMENT、401 和网络异常分支
         provider._balance["tok2"] = 2

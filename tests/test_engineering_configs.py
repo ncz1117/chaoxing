@@ -73,12 +73,15 @@ class EngineeringConfigTestCase(unittest.TestCase):
         self.assertNotIn("actions/checkout@v3", workflow)
         self.assertNotIn("actions/setup-python@v3", workflow)
         self.assertRegex(workflow, r"(?m)^\s+test:\s*$")
+        self.assertIn("ruff check .", workflow)
         self.assertIn("python -m unittest discover -s tests -v", workflow)
         self.assertIn("needs: test", workflow)
         self.assertIn(
             "if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')",
             workflow,
         )
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn("[tool.ruff.lint]", pyproject)
 
 
 if __name__ == "__main__":

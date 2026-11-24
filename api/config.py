@@ -56,6 +56,15 @@ def str_to_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def parse_submit_flag(value: Any) -> bool:
+    """严格解析题库 submit 开关：兼容旧 INI 行为，仅布尔 True 或精确文本 'true' 开启提交."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value == "true"
+    return False
+
+
 def _clean_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -241,7 +250,7 @@ class CommonConfig(_ConfigMappingMixin):
     def __post_init__(self) -> None:
         self.use_cookies = str_to_bool(self.use_cookies, default=False)
         self.username = _clean_str(self.username)
-        self.password = _clean_str(self.password)
+        self.password = "" if self.password is None else str(self.password)
         self.course_list = _parse_course_list(self.course_list)
 
         raw_speed = _parse_float(self.speed, "common.speed", 1.0)
@@ -306,7 +315,7 @@ class TikuConfig(_ConfigMappingMixin):
         self.provider = _clean_str(self.provider)
         self.ssl_verify = str_to_bool(self.ssl_verify, default=True)
         self.check_llm_connection = str_to_bool(self.check_llm_connection, default=True)
-        self.submit = str_to_bool(self.submit, default=False)
+        self.submit = parse_submit_flag(self.submit)
         self.cover_rate = _parse_float(self.cover_rate, "tiku.cover_rate", 0.8, min_value=0.0, max_value=1.0)
         self.delay = _parse_float(self.delay, "tiku.delay", 0.0, min_value=0.0)
         self.tokens = _clean_str(self.tokens)
@@ -389,9 +398,7 @@ class NotificationConfig(_ConfigMappingMixin):
         self.provider = _clean_str(self.provider)
         self.url = _clean_str(self.url)
         if self.url and not self.url.lower().startswith(("http://", "https://")):
-            raise InputFormatError(
-                f"配置项 notification.url 必须以 http:// 或 https:// 开头，实际为: {self.url!r}"
-            )
+            raise InputFormatError("配置项 notification.url 必须以 http:// 或 https:// 开头")
         self.tg_chat_id = _clean_str(self.tg_chat_id)
         self.extra = dict(self.extra) if self.extra else {}
 
@@ -447,7 +454,7 @@ def build_app_config_from_args(args) -> AppConfig:
     common = CommonConfig(
         use_cookies=getattr(args, "use_cookies", False),
         username=getattr(args, "username", "") or "",
-        password=getattr(args, "password", "") or "",
+        password="" if getattr(args, "password", None) is None else str(args.password),
         course_list=getattr(args, "list", None),
         speed=1.0 if getattr(args, "speed", None) is None else args.speed,
         jobs=4 if getattr(args, "jobs", None) is None else args.jobs,

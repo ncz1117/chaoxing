@@ -3,6 +3,7 @@
 from argparse import Namespace
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -21,6 +22,7 @@ from api.config import (  # noqa: E402
 from api.exceptions import InputFormatError  # noqa: E402
 from api.notification import NotificationFactory, ServerChan  # noqa: E402
 from api.process import increase_learning_count_for_course  # noqa: E402
+from api.tiku.base import DummyTiku, Tiku  # noqa: E402
 from api.tiku.like import TikuLike  # noqa: E402
 from api.tiku.yanxi import TikuYanxi  # noqa: E402
 
@@ -235,6 +237,82 @@ class ConfigModelTestCase(unittest.TestCase):
         self.assertEqual(fake_cx.increase_chapter_learning_count.call_count, 2)
         for call in fake_cx.increase_chapter_learning_count.call_args_list:
             self.assertEqual(call.args[2], 12)
+
+    def test_tiku_submit_only_enables_for_exact_lowercase_true_or_bool(self):
+        for val in ("yes", "1", "True", "TRUE", "on", "y", "false", 1, ""):
+            with self.subTest(val=val):
+                cfg = TikuConfig.from_mapping({"provider": "TikuYanxi", "tokens": "t1", "submit": val})
+                self.assertIs(cfg.submit, False)
+                provider = TikuYanxi()
+                provider.config_set(cfg)
+                provider.init_tiku()
+                self.assertIs(provider.SUBMIT, False)
+                self.assertEqual(provider.get_submit_params(), "1")
+
+        for val in ("true", True):
+            with self.subTest(enabled_val=val):
+                cfg = TikuConfig.from_mapping({"provider": "TikuYanxi", "tokens": "t1", "submit": val})
+                self.assertIs(cfg.submit, True)
+                provider = TikuYanxi()
+                provider.config_set(cfg)
+                provider.init_tiku()
+                self.assertIs(provider.SUBMIT, True)
+                self.assertEqual(provider.get_submit_params(), "")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for raw_submit, expected in (("yes", False), ("1", False), ("True", False), ("true", True)):
+                with self.subTest(ini_submit=raw_submit):
+                    ini_path = Path(tmp_dir) / f"cfg_{raw_submit}.ini"
+                    ini_path.write_text(
+                        f"[tiku]\nprovider = TikuYanxi\ntokens = t1\nsubmit = {raw_submit}\n",
+                        encoding="utf-8",
+                    )
+                    loaded = load_app_config(ini_path)
+                    self.assertIs(loaded.tiku.submit, expected)
+                    provider = Tiku.get_tiku_from_config(loaded.tiku, config_path=str(ini_path))
+                    provider.init_tiku()
+                    self.assertIs(provider.SUBMIT, expected)
+                    self.assertEqual(provider.get_submit_params(), "" if expected else "1")
+
+    def test_cli_password_preserves_leading_and_trailing_whitespace(self):
+        raw_password = "  sec ret  "
+        args = Namespace(
+            config=None,
+            use_cookies=False,
+            username="13800000000",
+            password=raw_password,
+            list=None,
+            speed=1.0,
+            jobs=4,
+            notopen_action="retry",
+            retry_interval=1.0,
+            add_learning_count=False,
+            target_count=100,
+            auto_sign=False,
+            verbose=False,
+        )
+        app_cfg = build_app_config_from_args(args)
+        self.assertEqual(app_cfg.common.password, raw_password)
+
+        with patch.object(Tiku, "get_tiku_from_config", return_value=DummyTiku()):
+            cx = main.init_chaoxing(app_cfg.common, app_cfg.tiku)
+        self.assertEqual(cx.account.password, raw_password)
+
+    def test_invalid_notification_url_error_and_logs_do_not_leak_token(self):
+        secret_url = "sctapi.ftqq.com/SCT_SECRET_TOKEN_99999.send"
+        with self.assertRaises(InputFormatError) as ctx:
+            NotificationConfig(provider="ServerChan", url=secret_url)
+        self.assertIn("notification.url", str(ctx.exception))
+        self.assertNotIn("SCT_SECRET_TOKEN_99999", str(ctx.exception))
+
+        logged = []
+        with patch("main.init_config", return_value=({}, {}, {"provider": "ServerChan", "url": secret_url}, None)), \
+             patch("main.logger.error", side_effect=lambda msg, *a, **kw: logged.append(str(msg))):
+            with self.assertRaises(InputFormatError) as main_ctx:
+                main.main()
+
+        self.assertNotIn("SCT_SECRET_TOKEN_99999", str(main_ctx.exception))
+        self.assertNotIn("SCT_SECRET_TOKEN_99999", "\n".join(logged))
 
 
 if __name__ == "__main__":

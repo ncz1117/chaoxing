@@ -9,7 +9,7 @@ import time
 from typing import Optional, Union
 
 from api.answer_check import check_answer
-from api.config import TikuConfig, str_to_bool
+from api.config import TikuConfig, parse_submit_flag, str_to_bool
 from api.logger import logger
 from api.tiku.cache import CacheDAO
 
@@ -70,7 +70,7 @@ class Tiku(ABC):
             self.ssl_verify = str_to_bool(self._conf.get("ssl_verify", True), default=True)
         if not self.DISABLE:
             # 设置提交模式
-            self.SUBMIT = str_to_bool(self._conf.get("submit", False), default=False)
+            self.SUBMIT = parse_submit_flag(self._conf.get("submit", False))
             self.COVER_RATE = float(self._conf.get("cover_rate", self.COVER_RATE))
             raw_true = self._conf.get("true_list", "正确,对,√,是")
             self.true_list = raw_true.split(",") if isinstance(raw_true, str) else [str(item) for item in raw_true]

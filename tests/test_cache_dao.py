@@ -149,7 +149,7 @@ class DeadCodeAndCacheTestCase(unittest.TestCase):
             cache_path.write_text(json.dumps({"k1": "v1"}), encoding="utf-8")
             dao = CacheDAO(str(cache_path))
 
-            with patch("api.answer.os.replace", side_effect=OSError("replace failed")):
+            with patch("api.tiku.cache.os.replace", side_effect=OSError("replace failed")):
                 dao.add_cache("k2", "v2")
                 dao.add_cache("k1", "v1_unsaved")
 
@@ -178,7 +178,7 @@ class DeadCodeAndCacheTestCase(unittest.TestCase):
                     ext_tmp.write_text(json.dumps(ext_data, ensure_ascii=False), encoding="utf-8")
                     orig_replace(str(ext_tmp), dst)
 
-            with patch("api.answer.os.replace", side_effect=racing_replace):
+            with patch("api.tiku.cache.os.replace", side_effect=racing_replace):
                 dao.add_cache("local_1", "v1")
 
             dao.add_cache("local_2", "v2")

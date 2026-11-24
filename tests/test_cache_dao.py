@@ -158,6 +158,44 @@ class DeadCodeAndCacheTestCase(unittest.TestCase):
             self.assertIsNone(CacheDAO(str(cache_path)).get_cache("k2"))
             self.assertEqual(json.loads(cache_path.read_text(encoding="utf-8")), {"k1": "v1"})
 
+    def test_cache_dao_does_not_overwrite_external_write_right_after_replace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "post_replace_race.json"
+            cache_path.write_text(json.dumps({"base": "v0"}), encoding="utf-8")
+            dao = CacheDAO(str(cache_path))
+
+            orig_replace = os.replace
+            injected = False
+
+            def racing_replace(src, dst):
+                nonlocal injected
+                orig_replace(src, dst)
+                if not injected and Path(dst).resolve() == cache_path.resolve():
+                    injected = True
+                    # 模拟在本次 os.replace 成功之后、签名登记之前，外部写入者原子替换了缓存文件
+                    ext_tmp = Path(tmpdir) / "ext.tmp"
+                    ext_data = {"base": "v0", "local_1": "v1", "ext": "external_after_replace"}
+                    ext_tmp.write_text(json.dumps(ext_data, ensure_ascii=False), encoding="utf-8")
+                    orig_replace(str(ext_tmp), dst)
+
+            with patch("api.answer.os.replace", side_effect=racing_replace):
+                dao.add_cache("local_1", "v1")
+
+            dao.add_cache("local_2", "v2")
+            self.assertEqual(dao.get_cache("ext"), "external_after_replace")
+            self.assertEqual(dao.get_cache("local_1"), "v1")
+            self.assertEqual(dao.get_cache("local_2"), "v2")
+            persisted = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                persisted,
+                {
+                    "base": "v0",
+                    "local_1": "v1",
+                    "ext": "external_after_replace",
+                    "local_2": "v2",
+                },
+            )
+
     def test_tiku_query_returns_validated_answer_and_handles_redo_mode(self):
         with tempfile.TemporaryDirectory() as tmpdir, \
              patch.object(CacheDAO, "DEFAULT_CACHE_FILE", str(Path(tmpdir) / "tiku_cache.json")):

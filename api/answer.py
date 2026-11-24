@@ -36,7 +36,7 @@ class CacheDAO:
     _registry_lock = threading.Lock()
     _path_locks: dict[Path, threading.RLock] = {}
     _path_caches: dict[Path, dict] = {}
-    _path_sigs: dict[Path, Optional[tuple[int, int]]] = {}
+    _path_sigs: dict[Path, Optional[tuple[int, int, int]]] = {}
 
     @classmethod
     def _get_lock_for_path(cls, path: Path) -> threading.RLock:
@@ -53,12 +53,16 @@ class CacheDAO:
         self._lock = self._get_lock_for_path(self._cache_key)
         self._ensure_loaded()
 
-    def _file_sig(self) -> Optional[tuple[int, int]]:
+    @staticmethod
+    def _stat_sig(path: Path) -> Optional[tuple[int, int, int]]:
         try:
-            st = self.cache_file.stat()
-            return (st.st_mtime_ns, st.st_size)
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size, st.st_ino)
         except OSError:
             return None
+
+    def _file_sig(self) -> Optional[tuple[int, int, int]]:
+        return self._stat_sig(self.cache_file)
 
     def _ensure_loaded(self) -> dict:
         with self._lock:
@@ -69,9 +73,10 @@ class CacheDAO:
                 return dict(cached)
             if sig is None:
                 data = {}
-                if self._write_cache(data):
+                written_sig = self._write_cache(data)
+                if written_sig is not None:
                     self._path_caches[self._cache_key] = dict(data)
-                    self._path_sigs[self._cache_key] = self._file_sig()
+                    self._path_sigs[self._cache_key] = written_sig
                 return data
 
             data: dict = {}
@@ -79,9 +84,10 @@ class CacheDAO:
                 sig_before = self._file_sig()
                 if sig_before is None:
                     data = {}
-                    if self._write_cache(data):
+                    written_sig = self._write_cache(data)
+                    if written_sig is not None:
                         self._path_caches[self._cache_key] = dict(data)
-                        self._path_sigs[self._cache_key] = self._file_sig()
+                        self._path_sigs[self._cache_key] = written_sig
                     return data
                 data = self._read_cache()
                 sig_after = self._file_sig()
@@ -145,7 +151,7 @@ class CacheDAO:
             logger.error(f"读取缓存异常: {e}")
             return {}
 
-    def _write_cache(self, data: dict) -> bool:
+    def _write_cache(self, data: dict) -> Optional[tuple[int, int, int]]:
         # 为缓存写入加锁，防止并发写入损坏文件
         try:
             with self._lock:
@@ -159,8 +165,9 @@ class CacheDAO:
                         json.dump(data, fp, ensure_ascii=False, indent=4)
                         fp.flush()
                         os.fsync(fp.fileno())
+                    written_sig = self._stat_sig(Path(tmp_path))
                     os.replace(tmp_path, str(self.cache_file))
-                    return True
+                    return written_sig
                 except Exception as e:
                     # 清理临时文件
                     try:
@@ -169,10 +176,10 @@ class CacheDAO:
                     except Exception:
                         pass
                     logger.error(f"Failed to write cache atomically: {e}")
-                    return False
+                    return None
         except IOError as e:
             logger.error(f"Failed to write cache: {e}")
-            return False
+            return None
 
     def get_cache(self, question: str) -> Optional[str]:
         with self._lock:
@@ -185,9 +192,10 @@ class CacheDAO:
             current = self._ensure_loaded()
             updated = dict(current)
             updated[question] = answer
-            if self._write_cache(updated):
+            written_sig = self._write_cache(updated)
+            if written_sig is not None:
                 self._path_caches[self._cache_key] = updated
-                self._path_sigs[self._cache_key] = self._file_sig()
+                self._path_sigs[self._cache_key] = written_sig
 
 
 class Tiku(ABC):
